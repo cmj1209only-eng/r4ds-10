@@ -13,3 +13,92 @@ library(rvest)
 library(httr2)
 library(purrr)
 ```
+
+```{r}
+#| cache: true
+
+snap_years <- c(2015, 2017, 2019, 2021, 2022)
+
+urls <- c(
+  "https://web.archive.org/web/20150101/https://www.imdb.com/chart/top/",
+  "https://web.archive.org/web/20170101/https://www.imdb.com/chart/top/",
+  "https://web.archive.org/web/20190101/https://www.imdb.com/chart/top/",
+  "https://web.archive.org/web/20210101/https://www.imdb.com/chart/top/",
+  "https://web.archive.org/web/20220201012049/https://www.imdb.com/chart/top/"
+)
+
+scrape_snapshot <- \(url, snap_year) {
+  page <- request(url) |>
+    req_timeout(60) |>
+    req_retry(max_tries = 3) |>
+    req_perform() |>
+    resp_body_html()
+
+  votes <- page |>
+    html_elements("td.imdbRating strong") |>
+    html_attr("title") |>
+    str_remove("^.*based on ") |>
+    parse_number()
+
+  page |>
+    html_element("table") |>
+    html_table() |>
+    select(rank_title = `Rank & Title`, rating = `IMDb Rating`) |>
+    separate_wider_regex(
+      rank_title,
+      patterns = c(
+        "^\\s*",
+        rank = "\\d+",
+        "\\.\\s+",
+        title = ".*?",
+        "\\s+\\(",
+        year = "\\d{4}",
+        "\\)\\s*$"
+      )
+    ) |>
+    mutate(
+      snap_year = snap_year,
+      rank = as.integer(rank),
+      year = as.integer(year),
+      number = votes
+    ) |>
+    select(snap_year, rank, title, year, rating, number)
+}
+
+imdb_snapshots <- map2(urls, snap_years, scrape_snapshot) |>
+  list_rbind()
+```
+
+```{r}
+imdb_snapshots |>
+  filter(snap_year %in% c(2015, 2022)) |>
+  select(snap_year, title, year, rank) |>
+  pivot_wider(
+    names_from = snap_year,
+    values_from = rank,
+    names_prefix = "rank_"
+  ) |>
+  drop_na(rank_2015, rank_2022) |>
+  mutate(
+    rank_change = rank_2015 - rank_2022,
+    decade = paste0((year %/% 10) * 10, "s")
+  ) |>
+  summarize(
+    avg_change = mean(rank_change),
+    .by = decade
+  ) |>
+  mutate(direction = if_else(avg_change > 0, "Rose", "Fell")) |>
+  ggplot(aes(x = avg_change, y = decade, fill = direction)) +
+  geom_col() +
+  geom_vline(xintercept = 0, linewidth = 0.8) +
+  scale_fill_manual(values = c("Rose" = "#2a9d8f", "Fell" = "#e76f51")) +
+  labs(
+    title = "Classic Films Slide While 1990s Films Hold Steady",
+    subtitle = "Average rank change in the IMDb Top 250 from 2015 to 2022",
+    x = "Average Rank Change (Positive = Rose)",
+    y = "Release Decade",
+    fill = "Direction",
+    caption = "Source: IMDb Top 250 (Wayback Machine). n = 190 films in both 2015 and 2022."
+  ) +
+  theme_minimal()
+```
